@@ -20,6 +20,7 @@ static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
+extern pagetable_t kernel_pagetable; // vm.c
 
 // initialize the proc table at boot time.
 void
@@ -30,16 +31,6 @@ procinit(void)
   initlock(&pid_lock, "nextpid");
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
-
-      // Allocate a page for the process's kernel stack.
-      // Map it high in memory, followed by an invalid
-      // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
   }
   kvminithart();
 }
@@ -121,6 +112,26 @@ found:
     return 0;
   }
 
+  // An copy of global kernel page table
+  p->kpagetable = ukvminit();
+  if(p->kpagetable == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  // Allocate a page for the process's kernel stack.
+  // Map it high in memory, followed by an invalid
+  // guard page.
+  // NOTE: each process's kpagetable only has its own mapping of kernel stack
+  //       while global kernel pagetable has all processes' kernel stack
+  char *pa = kalloc();
+  if(pa == 0)
+    panic("kalloc");
+  uint64 va = KSTACK((int) (p - proc));
+  ukvmmap(p->kpagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -142,6 +153,17 @@ freeproc(struct proc *p)
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
+  if(p->kstack){
+    pte_t *pte = walk(p->kpagetable, p->kstack, 0);
+    uint64 pa = PTE2PA(*pte);
+    if(pa == 0)
+      panic("freeproc: kstack");
+    kfree((void*)pa);
+  }  
+  p->kstack = 0;
+  if(p->kpagetable)
+    free_ukpagetable(p->kpagetable);
+  p->kpagetable = 0;
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -473,11 +495,21 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        w_satp(MAKE_SATP(p->kpagetable));
+        sfence_vma();
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
-        c->proc = 0;
+        // TRAP: You have to switch back to kernel pagetable 
+        //       Other wise the cpu will fall into deadlock in 
+        //       some fork-intense programs like reparent2
+        //       See https://piazza.com/class/kgkxf1hjf3kw7?cid=66
+        //       This modification corresponds to this lab hint:
+        //       scheduler() should use kernel_pagetable when no process is running.
+        w_satp(MAKE_SATP(kernel_pagetable));
+        sfence_vma();
+        c->proc = 0; // no process is running
 
         found = 1;
       }
@@ -486,6 +518,8 @@ scheduler(void)
 #if !defined (LAB_FS)
     if(found == 0) {
       intr_on();
+      w_satp(MAKE_SATP(kernel_pagetable));
+      sfence_vma();      
       asm volatile("wfi");
     }
 #else
