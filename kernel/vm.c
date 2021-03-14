@@ -63,7 +63,11 @@ ukvminit()
   ukvmmap(kpagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
 
   // CLINT
-  ukvmmap(kpagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+  // NOTE: Don't have to map CLINT, reasons: https://piazza.com/class/kgkxf1hjf3kw7?cid=27
+  //       Have to delete this mapping, because otherwise user address space 
+  //       will exceed CLINT (max user address space allowed is PLIC),
+  //       leading to panic("remap")
+  // ukvmmap(kpagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
 
   // PLIC
   ukvmmap(kpagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
@@ -394,6 +398,58 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   return -1;
 }
 
+// NOTE: This version is too slow: we have to re-map entire user addr space
+//       every time we call this function, and we call this quite often (through sbrk sys call)
+// void
+// umapk(pagetable_t upagetable, pagetable_t kpagetable, uint64 sz)
+// {
+//   pte_t *pte;
+//   uint64 pa, i;
+//   uint flags;
+//   for(i = 0; i < sz; i += PGSIZE){
+//     if((pte = walk(upagetable, i, 0)) == 0)
+//       panic("umapk: pte should exist");
+//     if((*pte & PTE_V) == 0)
+//       panic("umapk: page not present");
+//     pa = PTE2PA(*pte);
+//     flags = PTE_FLAGS(*pte) & ~PTE_U;
+//     if(mappages(kpagetable, i, PGSIZE, pa, flags) != 0)
+//       panic("umapk: mappages");
+//   }
+// }
+
+void
+umapk(pagetable_t upagetable, pagetable_t kpagetable, uint64 oldsz, uint64 newsz)
+{
+  pte_t *pte_from, *pte_to;
+  uint64 i;
+
+  if(newsz < oldsz)
+    return;
+
+  // FIXME: Why PGROUNDUP? Is this because mem[oldsz:PGROUNDUP(oldsz)] has been mapped?
+  oldsz = PGROUNDUP(oldsz);
+  for(i = oldsz; i < newsz; i+= PGSIZE){
+    if((pte_from = walk(upagetable, i, 0)) == 0)
+      panic("umapk: pte should exist");
+    if((pte_to = walk(kpagetable, i, 1)) == 0)
+      panic("umapk: walk kpagetable fails");
+    *pte_to = *pte_from & (~PTE_U);
+  }
+}
+
+void
+ukclear(pagetable_t kpagetable, uint64 sz)
+{
+  pte_t *pte;
+  uint64 i;
+  for(i = 0; i < sz; i += PGSIZE){
+    if((pte = walk(kpagetable, i, 0)) == 0)
+      panic("ukclear: pte should exist");
+    *pte &= ~PTE_V;
+  }
+}
+
 // mark a PTE invalid for user access.
 // used by exec for the user stack guard page.
 void
@@ -438,23 +494,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  uint64 n, va0, pa0;
-
-  while(len > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > len)
-      n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
-
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
-  }
-  return 0;
+  return copyin_new(pagetable, dst, srcva, len);
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -464,40 +504,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  uint64 n, va0, pa0;
-  int got_null = 0;
-
-  while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > max)
-      n = max;
-
-    char *p = (char *) (pa0 + (srcva - va0));
-    while(n > 0){
-      if(*p == '\0'){
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
-      }
-      --n;
-      --max;
-      p++;
-      dst++;
-    }
-
-    srcva = va0 + PGSIZE;
-  }
-  if(got_null){
-    return 0;
-  } else {
-    return -1;
-  }
+  return copyinstr_new(pagetable, dst, srcva, max);
 }
 
 void
