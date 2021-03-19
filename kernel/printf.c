@@ -121,6 +121,7 @@ panic(char *s)
   printf("panic: ");
   printf(s);
   printf("\n");
+  backtrace();
   panicked = 1; // freeze uart output from other CPUs
   for(;;)
     ;
@@ -131,4 +132,19 @@ printfinit(void)
 {
   initlock(&pr.lock, "pr");
   pr.locking = 1;
+}
+
+void
+backtrace(void)
+{
+  printf("backtrace:\n");
+  uint64 fp = r_fp();
+  uint64 bottom = PGROUNDUP(fp);
+  while(fp < bottom){
+    printf("%p\n", *(uint64*)(fp - 8)); // print the return address
+    fp = *(uint64*)(fp - 16);
+  }
+  // NOTE: Interesting... The ra and fp in first kernel stack frame points to user sapce
+  // printf("the first function:\n");
+  // printf("ra: %p fp: %p\n", *(uint64*)(fp - 8), *(uint64*)(fp - 16));
 }
