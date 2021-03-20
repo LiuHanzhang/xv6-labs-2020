@@ -98,3 +98,59 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_sigalarm(void)
+{
+  int n;
+  uint64 p;
+  if(argint(0, &n) < 0 || argaddr(1, &p) < 0)
+    return -1;
+
+  myproc()->alarm_interval = n;
+  myproc()->handler = (void (*)())p;
+  return 0;
+}
+
+uint64
+sys_sigreturn(void)
+{
+  struct proc *p = myproc();
+
+  p->trapframe->epc = p->uregs.epc;
+  p->trapframe->ra = p->uregs.ra;
+  p->trapframe->sp = p->uregs.sp;
+  p->trapframe->gp = p->uregs.gp;
+  p->trapframe->tp = p->uregs.tp;
+  p->trapframe->t0 = p->uregs.t0;
+  p->trapframe->t1 = p->uregs.t1;
+  p->trapframe->t2 = p->uregs.t2;
+  p->trapframe->s0 = p->uregs.s0;
+  p->trapframe->s1 = p->uregs.s1;
+  p->trapframe->a0 = p->uregs.a0;
+  p->trapframe->a1 = p->uregs.a1;
+  p->trapframe->a2 = p->uregs.a2;
+  p->trapframe->a3 = p->uregs.a3;
+  p->trapframe->a4 = p->uregs.a4;
+  p->trapframe->a5 = p->uregs.a5;
+  p->trapframe->a6 = p->uregs.a6;
+  p->trapframe->a7 = p->uregs.a7;
+  p->trapframe->s2 = p->uregs.s2;
+  p->trapframe->s3 = p->uregs.s3;
+  p->trapframe->s4 = p->uregs.s4;
+  p->trapframe->s5 = p->uregs.s5;
+  p->trapframe->s6 = p->uregs.s6;
+  p->trapframe->s7 = p->uregs.s7;
+  p->trapframe->s8 = p->uregs.s8;
+  p->trapframe->s9 = p->uregs.s9;
+  p->trapframe->s10 = p->uregs.s10;
+  p->trapframe->s11 = p->uregs.s11;
+  p->trapframe->t3 = p->uregs.t3;
+  p->trapframe->t4 = p->uregs.t4;
+  p->trapframe->t5 = p->uregs.t5;
+  p->trapframe->t6 = p->uregs.t6;
+
+  p->handling = 0;
+
+  return 0;
+}
