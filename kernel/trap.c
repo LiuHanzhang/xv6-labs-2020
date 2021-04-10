@@ -68,13 +68,19 @@ usertrap(void)
   } else if((which_dev = devintr()) != 0){
     // ok
   } else if(r_scause() == 13 || r_scause() == 15){
-    char *mem = kalloc();
-    if(mem == 0)
-      p->killed = 1; // TODO: Why do we have to kill the process?
+    // NOTE: Only page fault in user space will be handled here.
+    // Page fault from kernel space (e.g. sys calls) should be handled elsewhere
+    // See lab lazy part 3 hint #4
+    uint64 va = r_stval();
+    char *mem = 0;
+    if(va >= p->sz || p->sz > MAXVA || va < p->trapframe->sp)
+      p->killed = 1;
+    else if((mem = kalloc()) == 0)
+      p->killed = 1;
     else{
       memset(mem, 0, PGSIZE);
-      if(mappages(p->pagetable, PGROUNDDOWN(r_stval()), PGSIZE, (uint64)mem, 
-      PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+      if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, 
+                  PTE_W|PTE_X|PTE_R|PTE_U) != 0){
         kfree(mem);
         p->killed = 1;
       }
