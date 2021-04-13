@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -14,6 +16,11 @@ pagetable_t kernel_pagetable;
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
+
+extern struct{ // kalloc.c
+  struct spinlock lock;
+  uint8 a[NPAGES];
+} ref_cnt;
 
 /*
  * create a direct-map page table for the kernel.
@@ -311,27 +318,26 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
+    if(*pte & PTE_W) // TRAP: Enable COW only if the page is writtable.
+      *pte = (*pte & ~PTE_W) | PTE_COW; // Otherwise by setting cow, read-only page will also be writable
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
+    if(mappages(new, i, PGSIZE, pa, flags) != 0)
       goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
-    }
+    acquire(&ref_cnt.lock);
+    ref_cnt.a[PPN(pa)]++;
+    release(&ref_cnt.lock);
   }
   return 0;
 
  err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
+  uvmunmap(new, 0, i / PGSIZE, 0); // TODO: Changed do_free from 1 to 0. Not sure I'm right.
   return -1;
 }
 
@@ -358,9 +364,43 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    if(va0 > MAXVA) // TRAP: we have modified copyout to translate va using s/w
+      return -1;    // so we have to prevent invalid addr by s/w
+    pte_t *pte = walk(pagetable, va0, 0);
+    if(!pte || !(*pte & PTE_V) || !(*pte & PTE_U))
       return -1;
+    pa0 = PTE2PA(*pte);
+
+    if(!(*pte & PTE_W) && (*pte & PTE_COW)){
+      // handle page fault on cow page
+      struct proc *p = myproc();
+      acquire(&ref_cnt.lock);
+      if(ref_cnt.a[PPN(pa0)] == 1){
+        release(&ref_cnt.lock);
+        *pte = (*pte & ~PTE_COW) | PTE_W;
+      } else{
+        ref_cnt.a[PPN(pa0)]--;
+        release(&ref_cnt.lock);
+        char *mem = kalloc();
+        if(mem != 0){
+          *pte = *pte & ~PTE_V; // disable PTE_V to prevent panic("remap") in mappages()
+          uint flags = (PTE_FLAGS(*pte) & ~PTE_COW) | PTE_W;
+          memmove(mem, (char*)pa0, PGSIZE);
+          if(mappages(pagetable, va0, PGSIZE, (uint64)mem, flags) != 0){ 
+            kfree(mem);
+            printf("copyout(): mappages failed, pid=%d\n", p->pid);
+            p->killed = 1;
+            return -1;
+          }
+          pa0 = (uint64)mem;
+        } else{
+          printf("copyout(): no free mem for new page, pid=%d\n", p->pid);
+          p->killed = 1;
+          return -1;
+        }
+      }
+    }
+
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;

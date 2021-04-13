@@ -47,6 +47,10 @@
 #define KERNBASE 0x80000000L
 #define PHYSTOP (KERNBASE + 128*1024*1024)
 
+// establish ref_cnt mechanism for cow fork
+#define NPAGES ((PHYSTOP - KERNBASE) >> PGSHIFT)
+#define PPN(pa) (((pa) - KERNBASE) >> PGSHIFT)
+
 // map the trampoline page to the highest address,
 // in both user and kernel space.
 #define TRAMPOLINE (MAXVA - PGSIZE)

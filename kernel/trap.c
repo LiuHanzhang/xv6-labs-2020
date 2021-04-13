@@ -11,6 +11,11 @@ uint ticks;
 
 extern char trampoline[], uservec[], userret[];
 
+extern struct{ // kalloc.c
+  struct spinlock lock;
+  uint8 a[NPAGES];
+} ref_cnt;
+
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
 
@@ -67,7 +72,39 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if(r_scause() == 12 || r_scause() == 13 || r_scause() == 15){
+    uint64 va = r_stval();
+    pte_t *pte = walk(p->pagetable, va, 0);
+    uint64 pa = PTE2PA(*pte);
+    if(va >= p->sz || p->sz > MAXVA) // code from lab lazy TRAP: Important to decide if va is valid.
+      p->killed = 1; //  Otherwise kernmem test, which tests if user proc can read kernel mem, will fail
+    else if(pte && *pte & PTE_V && *pte & PTE_COW){
+      acquire(&ref_cnt.lock);
+      if(ref_cnt.a[PPN(pa)] == 1){
+        release(&ref_cnt.lock);
+        *pte = (*pte & ~PTE_COW) | PTE_W;
+      } else{
+        ref_cnt.a[PPN(pa)]--;
+        release(&ref_cnt.lock);
+        char *mem = kalloc();
+        if(mem != 0){
+          *pte = *pte & ~PTE_V; // disable PTE_V to prevent panic("remap") in mappages()
+          uint flags = (PTE_FLAGS(*pte) & ~PTE_COW) | PTE_W;
+          memmove(mem, (char*)pa, PGSIZE);
+          if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, flags) != 0){ 
+            kfree(mem); // TRAP: PGROUNDDOWN(va) is necessary. Otherwise it may might 2 pages in a row, causing panic remap
+            printf("usertrap(): mappages failed, pid=%d\n", p->pid);
+            p->killed = 1;
+          }
+        } else{
+          printf("usertrap(): no free mem for new page, pid=%d\n", p->pid);
+          p->killed = 1;
+        }
+      }
+    } else
+      goto bad;
   } else {
+  bad:
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;

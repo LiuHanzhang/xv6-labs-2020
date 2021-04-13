@@ -23,10 +23,26 @@ struct {
   struct run *freelist;
 } kmem;
 
+// NOTE: Actually free pages starts from end. 
+// We just cann't use "end", an variable to declare an array.
+// NOTE: lock is necessary. Otherwise may pass usertests, but fail make grade
+// See https://www.cnblogs.com/YuanZiming/p/14242491.html
+struct{
+  struct spinlock lock;
+  uint8 a[NPAGES];
+} ref_cnt;
+
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+
+  initlock(&ref_cnt.lock, "ref_cnt");
+  acquire(&ref_cnt.lock);
+  for(uint32 i = 0; i < NPAGES; i++)
+    ref_cnt.a[i] = 1; // NOTE: Not quite decent... But after freerange all elements will be zero.
+  release(&ref_cnt.lock);
+
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -50,6 +66,16 @@ kfree(void *pa)
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
+
+  // TRAP: Watch out! kfree is also used in kinit, when ref_cnt hasn't been established!
+  // Small trick: init all elem to 1 in freerange()
+  acquire(&ref_cnt.lock);
+  ref_cnt.a[PPN((uint64)pa)]--;
+  if(ref_cnt.a[PPN((uint64)pa)]){ // during kinit, ref_cnts are all zero.
+    release(&ref_cnt.lock);
+    return;
+  }
+  release(&ref_cnt.lock);
 
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
@@ -76,7 +102,11 @@ kalloc(void)
     kmem.freelist = r->next;
   release(&kmem.lock);
 
-  if(r)
+  if(r){
     memset((char*)r, 5, PGSIZE); // fill with junk
+    acquire(&ref_cnt.lock);
+    ref_cnt.a[PPN((uint64)r)] = 1;
+    release(&ref_cnt.lock);
+  }
   return (void*)r;
 }
