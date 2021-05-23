@@ -41,7 +41,9 @@ sys_wait(void)
 uint64
 sys_sbrk(void)
 {
-  int addr;
+  // TRAP: long instead of int to prevent overflow
+  // See https://piazza.com/class/kgkxf1hjf3kw7?cid=77 for details
+  long addr; 
   int n;
 
   if(argint(0, &n) < 0)
