@@ -1,0 +1,8 @@
+One simple rule that warns you of potential race condition is that be careful when a memory location is accessed concurrently, and at least one access is a write.
+In light of this rule, we have to be careful when the key falls in the same bucket, updating the corrsponding value or adding a new entry to the linked list.
+
+When two threads update the value of the same key, we don't need a lock, cause the latter one will overwrite the value.
+When one thread is adding a new entry to a linked-list, and the other one is updating an existing entry:
+    The other one may not be aware of the first one, creating another entry with same key.
+When two threads are both adding a new entry to the same linked-list:
+    Both new entries may points to the same next entry, leaving one entry out of the linked-list.(Result in a key being missing.)
