@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -67,6 +71,33 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if(r_scause() == 13 || r_scause() == 15){
+    uint64 va = r_stval();
+    char *mem = 0;
+    if(va >= p->sz || p->sz > MAXVA || va < p->trapframe->sp)
+      p->killed = 1;
+    else if((mem = kalloc()) == 0)
+      p->killed = 1;
+    else{
+      struct vma *v;
+      struct inode *ip;
+      memset(mem, 0, PGSIZE); // TRAP: In case the file size is not page-aligend, fill the rest mem with zero.
+      for(int i = 0; i < NVMA; i++){
+        v = &p->vma[i];
+        if(v->using && v->addr <= va && va < v->addr + v->length){
+          ip = v->f->ip;
+          ilock(ip);
+          readi(ip, 0, (uint64)mem, v->offset + PGROUNDDOWN(va - v->addr), PGSIZE);
+          iunlock(ip);
+          int perm = (v->prot << 1) | PTE_U;
+          if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, perm) != 0){
+            kfree(mem);
+            p->killed = 1;
+          }
+          break;
+        }
+      }
+    }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());

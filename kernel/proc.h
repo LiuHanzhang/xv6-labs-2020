@@ -1,3 +1,5 @@
+#define NVMA 16
+
 // Saved registers for kernel context switches.
 struct context {
   uint64 ra;
@@ -82,6 +84,16 @@ struct trapframe {
 
 enum procstate { UNUSED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+struct vma{
+  int using;
+  uint64 addr;
+  int length;
+  int prot;
+  int flags;
+  int offset;
+  struct file *f;
+};
+
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -101,6 +113,7 @@ struct proc {
   struct trapframe *trapframe; // data page for trampoline.S
   struct context context;      // swtch() here to run process
   struct file *ofile[NOFILE];  // Open files
+  struct vma vma[NVMA];
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
 };
